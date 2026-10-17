@@ -54,16 +54,110 @@ pub fn get_updates(token: &str, offset: i64, timeout: u64) -> Result<Vec<Telegra
     )
 }
 
-pub fn send_message(token: &str, chat_id: i64, text: &str) -> Result<()> {
-    let _: serde_json::Value = call(
+#[derive(Debug, Deserialize)]
+struct SentMessage {
+    message_id: i64,
+}
+
+fn outbound_text(text: &str) -> String {
+    let clipped = crate::util::clip_telegram(text);
+    if clipped.trim().is_empty() {
+        "(empty)".into()
+    } else {
+        clipped
+    }
+}
+
+/// Slash commands shown in Telegram's Menu / `/` picker.
+pub const BOT_COMMANDS: &[(&str, &str)] = &[
+    ("help", "Show available commands"),
+    ("commands", "List all slash commands"),
+    ("status", "Engine, project, git, sessions, jobs"),
+    ("project", "List projects, or switch with a name"),
+    ("add", "Register workspace/<name>"),
+    ("clone", "Clone owner/repo into the workspace"),
+    ("cwd", "Set cwd inside the project"),
+    ("use", "Switch engine: claude or codex"),
+    ("new", "New session for this engine, or a job id"),
+    ("stop", "Stop the default job, or a job id"),
+    ("perm", "Set sandbox: read or write"),
+    ("jobs", "Running and recent jobs"),
+    ("run", "Start a job without flipping /use"),
+    ("both", "Send the same prompt to Claude and Codex"),
+    ("verbose", "Noisier status for this turn"),
+    ("pr", "Last pull request URL"),
+    ("github", "GitHub login from Telegram"),
+];
+
+pub fn install_menu(token: &str) -> Result<()> {
+    let commands: Vec<serde_json::Value> = BOT_COMMANDS
+        .iter()
+        .map(|(command, description)| {
+            json!({
+                "command": command,
+                "description": description,
+            })
+        })
+        .collect();
+    let _: bool = call(
         token,
-        "sendMessage",
+        "setMyCommands",
+        json!({ "commands": commands }),
+    )?;
+    let _: bool = call(
+        token,
+        "setChatMenuButton",
+        json!({ "menu_button": { "type": "commands" } }),
+    )?;
+    report::info("telegram", "installed command menu");
+    Ok(())
+}
+
+pub fn send_message(token: &str, chat_id: i64, text: &str) -> Result<i64> {
+    send_json(token, chat_id, text, None)
+}
+
+pub fn send_message_reply(
+    token: &str,
+    chat_id: i64,
+    text: &str,
+    reply_to: i64,
+) -> Result<i64> {
+    send_json(token, chat_id, text, Some(reply_to))
+}
+
+fn send_json(
+    token: &str,
+    chat_id: i64,
+    text: &str,
+    reply_to: Option<i64>,
+) -> Result<i64> {
+    let mut body = json!({
+        "chat_id": chat_id,
+        "text": outbound_text(text),
+    });
+    if let Some(id) = reply_to {
+        body["reply_to_message_id"] = json!(id);
+    }
+    let sent: SentMessage = call(token, "sendMessage", body)?;
+    Ok(sent.message_id)
+}
+
+pub fn edit_message(token: &str, chat_id: i64, message_id: i64, text: &str) -> Result<()> {
+    let result = call::<serde_json::Value>(
+        token,
+        "editMessageText",
         json!({
             "chat_id": chat_id,
-            "text": text,
+            "message_id": message_id,
+            "text": outbound_text(text),
         }),
-    )?;
-    Ok(())
+    );
+    match result {
+        Ok(_) => Ok(()),
+        Err(err) if err.to_string().contains("message is not modified") => Ok(()),
+        Err(err) => Err(err),
+    }
 }
 
 pub fn drain(token: &str, state: &mut State) -> Result<()> {
@@ -105,7 +199,7 @@ pub fn try_pair(state: &mut State, token: &str, update: &TelegramUpdate) -> Resu
         send_message(
             token,
             message.chat.id,
-            "pairing code is missing or expired. run pocket-code auth telegram",
+            "pairing code is missing or expired. run raz auth telegram",
         )?;
         return Ok(false);
     }
@@ -116,6 +210,9 @@ pub fn try_pair(state: &mut State, token: &str, update: &TelegramUpdate) -> Resu
     }
 
     state.consume_pairing(from.id);
+    if let Err(err) = install_menu(token) {
+        report::warn("telegram", format!("command menu: {err:#}"));
+    }
     let who = from.username.as_deref().unwrap_or("user");
     send_message(
         token,
@@ -163,7 +260,7 @@ pub fn wait_for_pair(
 
 #[cfg(test)]
 mod tests {
-    use super::start_payload;
+    use super::{start_payload, BOT_COMMANDS};
 
     #[test]
     fn parse_start() {
@@ -171,5 +268,27 @@ mod tests {
         assert_eq!(start_payload("/start@mybot XK4P2M"), Some("XK4P2M"));
         assert_eq!(start_payload("/start"), None);
         assert_eq!(start_payload("/status"), None);
+    }
+
+    #[test]
+    fn menu_commands_fit_telegram() {
+        let mut names = std::collections::BTreeSet::new();
+        for (command, description) in BOT_COMMANDS {
+            assert!(
+                command
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+                "{command}"
+            );
+            assert!((1..=32).contains(&command.len()), "{command}");
+            assert!(
+                (3..=256).contains(&description.len()),
+                "{command}: {description}"
+            );
+            assert!(names.insert(*command), "duplicate {command}");
+        }
+        assert!(names.contains("help"));
+        assert!(names.contains("status"));
+        assert!(names.contains("jobs"));
     }
 }

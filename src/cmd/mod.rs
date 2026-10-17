@@ -1,3 +1,4 @@
+pub(crate) mod bot;
 mod doctor;
 mod project;
 mod serve;
@@ -34,7 +35,7 @@ enum Command {
     },
     /// Check binaries, logins, state file, and Telegram pairing.
     Doctor,
-    /// Long-poll Telegram. Completes pairing and answers /status.
+    /// Long-poll Telegram. Completes pairing and runs the bot.
     Serve,
     /// Write a systemd --user unit, or print how to run serve.
     Up,

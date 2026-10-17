@@ -3,6 +3,7 @@ pub mod codex;
 pub mod detect;
 pub mod engines;
 pub mod git;
+pub mod github;
 pub mod stream;
 pub mod systemd;
 pub mod telegram;

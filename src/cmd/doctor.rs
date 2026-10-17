@@ -2,9 +2,11 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 
-use crate::integrations::{detect, engines};
+use crate::integrations::{detect, engines, github};
 use crate::models::{Paths, State};
 use crate::store;
+use crate::turns;
+use crate::util::{is_root, owns_path};
 
 struct Check {
     name: &'static str,
@@ -33,7 +35,7 @@ pub fn run() -> Result<ExitCode> {
         checks.push(ok(
             "state",
             false,
-            format!("missing {} — run pocket-code setup", paths.state.display()),
+            format!("missing {} — run raz setup", paths.state.display()),
         ));
         None
     };
@@ -59,6 +61,39 @@ pub fn run() -> Result<ExitCode> {
         workspace.display().to_string(),
     ));
 
+    checks.push(Check {
+        name: "not-root",
+        ok: !is_root(),
+        required: cfg!(unix),
+        detail: if is_root() {
+            "do not run as root — use a dedicated user".into()
+        } else if cfg!(unix) {
+            "ok".into()
+        } else {
+            "n/a on this OS".into()
+        },
+    });
+    checks.push(Check {
+        name: "workspace-owner",
+        ok: owns_path(&workspace),
+        required: cfg!(unix),
+        detail: if cfg!(unix) {
+            if owns_path(&workspace) {
+                "owned by current user".into()
+            } else {
+                "workspace must be owned by the raz user".into()
+            }
+        } else {
+            "n/a on this OS".into()
+        },
+    });
+    checks.push(Check {
+        name: "listen",
+        ok: true,
+        required: false,
+        detail: "none — telegram outbound only".into(),
+    });
+
     checks.push(bin("claude", &tools));
     checks.push(bin("codex", &tools));
     checks.push(bin_required("gh", &tools, false));
@@ -74,7 +109,7 @@ pub fn run() -> Result<ExitCode> {
             if claude_ready {
                 "claude auth status ok"
             } else {
-                "run pocket-code auth claude"
+                "run raz auth claude"
             }
             .into(),
         ));
@@ -87,7 +122,7 @@ pub fn run() -> Result<ExitCode> {
             if codex_ready {
                 "codex login status ok"
             } else {
-                "run pocket-code auth codex"
+                "run raz auth codex"
             }
             .into(),
         ));
@@ -98,17 +133,44 @@ pub fn run() -> Result<ExitCode> {
         "need at least one authenticated engine".into(),
     ));
 
+    let github_ready = tools.gh.is_some() && engines::gh_logged_in();
     if tools.gh.is_some() {
-        let ready = engines::gh_logged_in();
         checks.push(Check {
             name: "github-login",
-            ok: ready,
+            ok: github_ready,
             required: false,
-            detail: if ready {
+            detail: if github_ready {
                 engines::gh_user().unwrap_or_else(|| "gh auth status ok".into())
             } else {
-                "run pocket-code auth github".into()
+                "run raz auth github".into()
             },
+        });
+    }
+    let project_cwd = state.as_ref().and_then(|s| {
+        s.current
+            .project
+            .as_deref()
+            .and_then(|name| s.projects.get(name))
+            .map(|p| std::path::PathBuf::from(&p.path))
+    });
+    let probe_cwd = project_cwd
+        .as_ref()
+        .cloned()
+        .filter(|p| p.is_dir())
+        .unwrap_or_else(|| workspace.clone());
+    if probe_cwd.is_dir() {
+        let probe = github::probe(&probe_cwd);
+        checks.push(Check {
+            name: "git-child",
+            ok: probe.git_ok,
+            required: project_cwd.is_some(),
+            detail: probe.git_detail,
+        });
+        checks.push(Check {
+            name: "gh-child",
+            ok: probe.gh_ok,
+            required: github_ready,
+            detail: probe.gh_detail,
         });
     }
 
@@ -119,7 +181,7 @@ pub fn run() -> Result<ExitCode> {
         if token.is_some() {
             paths.token.display().to_string()
         } else {
-            "set POCKET_CODE_TELEGRAM_TOKEN or run setup".into()
+            "set RAZ_TELEGRAM_TOKEN or run setup".into()
         },
     ));
     if token.is_some() && paths.token.exists() {
@@ -129,6 +191,18 @@ pub fn run() -> Result<ExitCode> {
             required: cfg!(unix),
             detail: "want 0600".into(),
         });
+    }
+
+    if let Some(state) = state.as_ref() {
+        let jail = turns::worktree_jail_ok(state);
+        checks.push(ok(
+            "worktree-jail",
+            jail.is_ok(),
+            match &jail {
+                Ok(()) => "ok".into(),
+                Err(err) => err.to_string(),
+            },
+        ));
     }
 
     let paired = state.as_ref().map(|s| s.telegram.paired).unwrap_or(false);
