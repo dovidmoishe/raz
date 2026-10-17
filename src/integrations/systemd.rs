@@ -7,7 +7,7 @@ use crate::util::report;
 
 pub fn unit_path() -> Result<PathBuf> {
     let home = dirs::home_dir().context("home directory")?;
-    Ok(home.join(".config/systemd/user/pocket-code.service"))
+    Ok(home.join(".config/systemd/user/raz.service"))
 }
 
 pub fn write_user_unit(paths: &Paths) -> Result<PathBuf> {
@@ -21,7 +21,7 @@ pub fn write_user_unit(paths: &Paths) -> Result<PathBuf> {
     }
     let body = format!(
         "[Unit]\n\
-         Description=pocket-code telegram supervisor\n\
+         Description=raz telegram harness\n\
          After=network-online.target\n\
          Wants=network-online.target\n\
          \n\
@@ -31,7 +31,7 @@ pub fn write_user_unit(paths: &Paths) -> Result<PathBuf> {
          Restart=on-failure\n\
          RestartSec=3\n\
          WorkingDirectory={home}\n\
-         Environment=POCKET_CODE_HOME={home}\n\
+         Environment=RAZ_HOME={home}\n\
          \n\
          [Install]\n\
          WantedBy=default.target\n",

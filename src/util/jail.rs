@@ -42,7 +42,7 @@ mod tests {
 
     #[test]
     fn jail_rejects_parent() {
-        let root = Path::new("/var/lib/pocket-code/projects");
+        let root = Path::new("/var/lib/raz/projects");
         assert!(under_root(root, Path::new("../etc")).is_err());
         assert!(under_root(root, Path::new("shop")).is_ok());
         assert!(under_root(root, Path::new("shop/../other")).is_ok());

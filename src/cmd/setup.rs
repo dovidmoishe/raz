@@ -9,7 +9,7 @@ use crate::store::write_secret;
 use crate::util::report;
 
 pub fn run() -> Result<()> {
-    println!("pocket-code setup");
+    println!("raz setup");
     println!(
         "Claude and Codex keep their own logins. We only store ready flags and session ids.\n"
     );
@@ -52,7 +52,7 @@ pub fn run() -> Result<()> {
         state.save(&paths.state)?;
     } else if tools.gh.is_none() {
         println!(
-            "gh is missing. install it later, then run: pocket-code auth github\n  {}\n",
+            "gh is missing. install it later, then run: raz auth github\n  {}\n",
             detect::install_hint("gh")
         );
     }
@@ -61,18 +61,18 @@ pub fn run() -> Result<()> {
 
     if cfg!(unix)
         && Confirm::new()
-            .with_prompt("write a systemd --user unit for pocket-code serve?")
+            .with_prompt("write a systemd --user unit for raz serve?")
             .default(true)
             .interact()?
     {
         let unit = systemd::write_user_unit(&paths)?;
         println!(
-            "\nenable it with:\n  systemctl --user daemon-reload\n  systemctl --user enable --now pocket-code\n\nunit: {}\n",
+            "\nenable it with:\n  systemctl --user daemon-reload\n  systemctl --user enable --now raz\n\nunit: {}\n",
             unit.display()
         );
     }
 
-    println!("setup complete. next: pocket-code doctor   then   pocket-code serve");
+    println!("setup complete. next: raz doctor   then   raz serve");
     println!("then open build-board.html locally and check off the setup tasks.");
     Ok(())
 }
@@ -146,12 +146,11 @@ fn setup_telegram(paths: &Paths, state: &mut State) -> Result<()> {
         }
     }
 
-    let token: String = if let Ok(env) = std::env::var("POCKET_CODE_TELEGRAM_TOKEN") {
-        if !env.trim().is_empty()
-            && Confirm::new()
-                .with_prompt("use POCKET_CODE_TELEGRAM_TOKEN from the environment?")
-                .default(true)
-                .interact()?
+    let token: String = if let Some(env) = telegram_token_env() {
+        if Confirm::new()
+            .with_prompt("use RAZ_TELEGRAM_TOKEN from the environment?")
+            .default(true)
+            .interact()?
         {
             env
         } else {
@@ -164,6 +163,18 @@ fn setup_telegram(paths: &Paths, state: &mut State) -> Result<()> {
     write_secret(&paths.token, token.trim())?;
     report::info("setup", format!("wrote {}", paths.token.display()));
     finish_pairing(paths, state, token.trim())
+}
+
+fn telegram_token_env() -> Option<String> {
+    for key in ["RAZ_TELEGRAM_TOKEN", "POCKET_CODE_TELEGRAM_TOKEN"] {
+        if let Ok(env) = std::env::var(key) {
+            let trimmed = env.trim().to_string();
+            if !trimmed.is_empty() {
+                return Some(trimmed);
+            }
+        }
+    }
+    None
 }
 
 fn prompt_token() -> Result<String> {
@@ -211,7 +222,7 @@ fn finish_pairing(paths: &Paths, state: &mut State, token: &str) -> Result<()> {
         telegram::wait_for_pair(state, token, |s| s.save(&paths.state))?;
         println!("telegram paired.");
     } else {
-        println!("run pocket-code serve and send /start {code}");
+        println!("run raz serve and send /start {code}");
     }
     Ok(())
 }

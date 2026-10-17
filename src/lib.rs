@@ -1,4 +1,4 @@
-//! pocket-code crate layout:
+//! raz crate layout:
 //!
 //! - [`models`] — persisted and wire structs
 //! - [`store`] — `state.json` load/save

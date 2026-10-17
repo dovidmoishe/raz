@@ -1,6 +1,6 @@
 # Agent notes
 
-pocket-code is a VPS supervisor. Telegram is the client. Claude and Codex own chat memory. This repo only stores routing state.
+raz is a harness. Telegram is the client. Claude and Codex own chat memory. This repo only stores routing state.
 
 ## Crate layout
 

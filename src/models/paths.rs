@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -12,14 +13,14 @@ pub struct Paths {
 
 impl Paths {
     pub fn resolve() -> Result<Self> {
-        let home = match std::env::var_os("POCKET_CODE_HOME") {
+        let home = match env_os("RAZ_HOME", "POCKET_CODE_HOME") {
             Some(value) => PathBuf::from(value),
             None => dirs::home_dir()
                 .ok_or_else(|| anyhow::anyhow!("cannot resolve home directory"))?
-                .join(".pocket-code"),
+                .join(".raz"),
         };
 
-        let workspace = match std::env::var_os("POCKET_CODE_WORKSPACE") {
+        let workspace = match env_os("RAZ_WORKSPACE", "POCKET_CODE_WORKSPACE") {
             Some(value) => PathBuf::from(value),
             None => home.join("projects"),
         };
@@ -39,7 +40,7 @@ impl Paths {
     }
 
     pub fn telegram_token(&self) -> Result<Option<String>> {
-        if let Ok(value) = std::env::var("POCKET_CODE_TELEGRAM_TOKEN") {
+        if let Some(value) = env_str("RAZ_TELEGRAM_TOKEN", "POCKET_CODE_TELEGRAM_TOKEN") {
             let trimmed = value.trim().to_string();
             if !trimmed.is_empty() {
                 return Ok(Some(trimmed));
@@ -53,5 +54,16 @@ impl Paths {
             }
         }
         Ok(None)
+    }
+}
+
+fn env_os(primary: &str, legacy: &str) -> Option<OsString> {
+    std::env::var_os(primary).or_else(|| std::env::var_os(legacy))
+}
+
+fn env_str(primary: &str, legacy: &str) -> Option<String> {
+    match std::env::var(primary) {
+        Ok(value) => Some(value),
+        Err(_) => std::env::var(legacy).ok(),
     }
 }

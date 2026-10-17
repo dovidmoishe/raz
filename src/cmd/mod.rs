@@ -13,8 +13,8 @@ use crate::util::report;
 
 #[derive(Parser)]
 #[command(
-    name = "pocket-code",
-    about = "VPS supervisor for Claude Code and Codex, driven from Telegram.",
+    name = "raz",
+    about = "raz: harness for Claude Code and Codex, driven from Telegram.",
     version
 )]
 struct Cli {
