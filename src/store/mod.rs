@@ -1,6 +1,6 @@
 mod fs;
 
-pub use fs::{atomic_write, is_world_readable, write_secret};
+pub use fs::{append_jsonl, atomic_write, is_world_readable, write_secret};
 
 use std::path::Path;
 

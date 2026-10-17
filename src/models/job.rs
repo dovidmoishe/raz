@@ -12,4 +12,22 @@ pub struct Job {
     pub kind: String,
     pub state: String,
     pub telegram_status_id: Option<i64>,
+    #[serde(default)]
+    pub chat_id: Option<i64>,
+    #[serde(default)]
+    pub prompt: String,
+    #[serde(default)]
+    pub queued_prompt: Option<String>,
+    #[serde(default)]
+    pub last_line: Option<String>,
+    #[serde(default)]
+    pub last_status_unix: Option<u64>,
+    #[serde(default)]
+    pub verbose: bool,
+}
+
+impl Job {
+    pub fn occupies_checkout(&self) -> bool {
+        matches!(self.state.as_str(), "queued" | "running")
+    }
 }

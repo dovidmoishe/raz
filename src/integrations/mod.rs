@@ -1,5 +1,8 @@
+pub mod claude;
+pub mod codex;
 pub mod detect;
 pub mod engines;
 pub mod git;
+pub mod stream;
 pub mod systemd;
 pub mod telegram;

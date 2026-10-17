@@ -8,6 +8,7 @@ pub struct Paths {
     pub home: PathBuf,
     pub state: PathBuf,
     pub token: PathBuf,
+    pub events: PathBuf,
     pub workspace: PathBuf,
 }
 
@@ -28,6 +29,7 @@ impl Paths {
         Ok(Self {
             state: home.join("state.json"),
             token: home.join("telegram.token"),
+            events: home.join("turns.jsonl"),
             home,
             workspace,
         })

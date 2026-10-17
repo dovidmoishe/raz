@@ -8,8 +8,9 @@ raz is a harness. Telegram is the client. Claude and Codex own chat memory. This
 - `src/store` — `state.json` load/save, atomic writes, secret files
 - `src/cmd` — `setup`, `auth`, `doctor`, `serve`, `up`, `project`
 - `src/projects` — workspace catalog (register, clone, switch, cwd, status)
+- `src/turns` — job queue, `/use` `/new` `/stop` `/perm`, one writer per checkout, engine spawn
 - `src/integrations` — Claude / Codex / GitHub / Telegram / systemd
-- `src/util` — logging and the workspace path jail
+- `src/util` — logging, workspace path jail, rate limit, unix identity
 
 Keep new types in `models`. Keep CLI verbs in `cmd`. Do not dump structs back into `main.rs`.
 
