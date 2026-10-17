@@ -6,7 +6,8 @@ raz is a harness. Telegram is the client. Claude and Codex own chat memory. This
 
 - `src/models` — structs and enums (`State`, `Engine`, `Project`, `Job`, Telegram DTOs)
 - `src/store` — `state.json` load/save, atomic writes, secret files
-- `src/cmd` — `setup`, `auth`, `doctor`, `serve`, `up`
+- `src/cmd` — `setup`, `auth`, `doctor`, `serve`, `up`, `project`
+- `src/projects` — workspace catalog (register, clone, switch, cwd, status)
 - `src/integrations` — Claude / Codex / GitHub / Telegram / systemd
 - `src/util` — logging and the workspace path jail
 

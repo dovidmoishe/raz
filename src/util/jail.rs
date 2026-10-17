@@ -48,4 +48,17 @@ mod tests {
         assert!(under_root(root, Path::new("shop/../other")).is_ok());
         assert!(under_root(root, Path::new("shop/../../etc")).is_err());
     }
+
+    #[test]
+    fn jail_rejects_absolute_outside_and_keeps_dot() {
+        let root = Path::new("/var/lib/raz/projects");
+        assert!(under_root(root, Path::new("/etc/passwd")).is_err());
+        assert!(under_root(root, Path::new("/var/lib/raz/projects/shop")).is_ok());
+        let dot = under_root(root, Path::new(".")).unwrap();
+        assert_eq!(dot, super::normalize(root));
+        let empty = under_root(root, Path::new("")).unwrap();
+        assert_eq!(empty, super::normalize(root));
+        let stay = under_root(root, Path::new("shop/src/..")).unwrap();
+        assert!(stay.ends_with("shop"));
+    }
 }

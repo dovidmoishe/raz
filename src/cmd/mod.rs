@@ -1,4 +1,5 @@
 mod doctor;
+mod project;
 mod serve;
 mod setup;
 mod up;
@@ -37,6 +38,26 @@ enum Command {
     Serve,
     /// Write a systemd --user unit, or print how to run serve.
     Up,
+    /// Register, clone, list, or switch workspace projects.
+    Project {
+        #[command(subcommand)]
+        action: ProjectAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProjectAction {
+    /// List registered projects.
+    List,
+    /// Register workspace/<name> if that directory exists.
+    Add { name: String },
+    /// Switch the current project.
+    Use { name: String },
+    /// Clone owner/repo into the workspace and register it.
+    Clone {
+        spec: String,
+        name: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -65,6 +86,17 @@ pub fn run() -> Result<ExitCode> {
         }
         Command::Up => {
             up::run()?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Project { action } => {
+            match action {
+                ProjectAction::List => project::list()?,
+                ProjectAction::Add { name } => project::add(&name)?,
+                ProjectAction::Use { name } => project::use_project(&name)?,
+                ProjectAction::Clone { spec, name } => {
+                    project::clone(&spec, name.as_deref())?
+                }
+            }
             Ok(ExitCode::SUCCESS)
         }
     }
