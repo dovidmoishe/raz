@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 use super::{Current, Engine, Engines, GithubStatus, Job, Project, TelegramState};
@@ -19,6 +19,8 @@ pub struct State {
     pub workspace_root: String,
     pub current: Current,
     #[serde(default)]
+    pub setup: super::SetupProgress,
+    #[serde(default)]
     pub projects: BTreeMap<String, Project>,
     #[serde(default)]
     pub jobs: BTreeMap<String, Job>,
@@ -33,6 +35,7 @@ impl State {
             github: GithubStatus::default(),
             workspace_root: workspace_root.to_string_lossy().into_owned(),
             current: Current::default(),
+            setup: super::SetupProgress::default(),
             projects: BTreeMap::new(),
             jobs: BTreeMap::new(),
         }

@@ -4,15 +4,15 @@ pub use fs::{append_jsonl, atomic_write, is_world_readable, write_secret};
 
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
-use crate::models::{Paths, State, SCHEMA_VERSION};
+use crate::models::{Paths, SCHEMA_VERSION, State};
 
 impl State {
     pub fn load(path: &Path) -> Result<Self> {
-        let raw = std::fs::read_to_string(path)
-            .with_context(|| format!("read {}", path.display()))?;
+        let raw =
+            std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
         let value: Value =
             serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))?;
         let version = value.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -72,10 +72,27 @@ mod tests {
         let mut state = State::new(dir.path());
         state.engines.claude.ready = true;
         state.current.engine = Some(Engine::Claude);
+        state.setup.github_skipped = true;
+        state.setup.service_configured = true;
         state.save(&path).unwrap();
         let loaded = State::load(&path).unwrap();
         assert!(loaded.engines.claude.ready);
         assert_eq!(loaded.current.engine, Some(Engine::Claude));
         assert!(loaded.jobs.is_empty());
+        assert!(loaded.setup.github_skipped);
+        assert!(loaded.setup.service_configured);
+    }
+
+    #[test]
+    fn existing_state_without_setup_progress_still_loads() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("state.json");
+        let mut value = serde_json::to_value(State::new(dir.path())).unwrap();
+        value.as_object_mut().unwrap().remove("setup");
+        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        let state = State::load(&path).unwrap();
+        assert!(!state.setup.github_skipped);
+        assert!(!state.setup.service_skipped);
+        assert!(!state.setup.service_configured);
     }
 }

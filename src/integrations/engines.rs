@@ -1,6 +1,6 @@
 use std::process::{Command, Stdio};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::models::{Engine, GithubStatus, State};
 use crate::util::report;
@@ -53,11 +53,7 @@ pub fn gh_user() -> Option<String> {
         return None;
     }
     let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if name.is_empty() {
-        None
-    } else {
-        Some(name)
-    }
+    if name.is_empty() { None } else { Some(name) }
 }
 
 pub fn login_claude(state: &mut State) -> Result<()> {
@@ -134,13 +130,14 @@ pub fn refresh_github(state: &mut State) -> Result<()> {
 }
 
 pub fn refresh_engines(state: &mut State) {
-    if which::which("claude").is_ok() {
-        state.engines.claude.ready = claude_logged_in();
-    }
-    if which::which("codex").is_ok() {
-        state.engines.codex.ready = codex_logged_in();
-    }
-    if state.current.engine.is_none() {
+    state.engines.claude.ready = which::which("claude").is_ok() && claude_logged_in();
+    state.engines.codex.ready = which::which("codex").is_ok() && codex_logged_in();
+    let current_ready = match state.current.engine {
+        Some(Engine::Claude) => state.engines.claude.ready,
+        Some(Engine::Codex) => state.engines.codex.ready,
+        None => false,
+    };
+    if !current_ready {
         state.current.engine = state.pick_default_engine();
     }
 }
