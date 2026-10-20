@@ -344,8 +344,21 @@ fn emit(token: &str, state: &mut State, events: &[JobEvent]) {
                         report::warn("telegram", err.to_string());
                     }
                     let body = turns::final_reply(summary, pr.as_deref());
-                    if let Err(err) = telegram::send_message_reply(token, cid, &body, mid) {
-                        report::warn("telegram", err.to_string());
+                    let result = telegram::send_agent_reply(token, cid, &body, mid, |id| {
+                        if let Some(job) = state.jobs.get_mut(job_id) {
+                            job.telegram_reply_ids.push(id);
+                        }
+                    });
+                    if let Err(err) = result {
+                        report::warn("telegram", format!("{err:#}"));
+                        let notice = format!(
+                            "Could not deliver the complete reply for {job_id}. {err}. Please ask the agent to resend the missing section."
+                        );
+                        if let Err(notice_err) =
+                            telegram::send_message_reply(token, cid, &notice, mid)
+                        {
+                            report::warn("telegram", notice_err.to_string());
+                        }
                     }
                 }
             }

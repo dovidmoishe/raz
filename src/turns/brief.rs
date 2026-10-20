@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use crate::integrations::git;
 use crate::models::{Engine, Job, Project, State};
@@ -11,9 +11,10 @@ pub fn resolve_cwd(project: &Project) -> Result<PathBuf> {
 }
 
 pub fn resolve_job_cwd(state: &State, job: &Job) -> Result<PathBuf> {
-    let project = state.projects.get(&job.project).ok_or_else(|| {
-        anyhow::anyhow!("unknown project {}", job.project)
-    })?;
+    let project = state
+        .projects
+        .get(&job.project)
+        .ok_or_else(|| anyhow::anyhow!("unknown project {}", job.project))?;
     let root = if let Some(wt) = job.worktree.as_deref() {
         under_root(Path::new(&state.workspace_root), Path::new(wt))?
     } else {
@@ -29,9 +30,8 @@ fn cwd_from_root(root: &Path, project: &Project) -> Result<PathBuf> {
     let cwd = if project.cwd.is_empty() || project.cwd == "." {
         normalize(root)
     } else {
-        under_root(root, Path::new(&project.cwd)).map_err(|_| {
-            anyhow::anyhow!("bad cwd {} — /cwd to fix", project.cwd)
-        })?
+        under_root(root, Path::new(&project.cwd))
+            .map_err(|_| anyhow::anyhow!("bad cwd {} — /cwd to fix", project.cwd))?
     };
     if !cwd.is_dir() {
         bail!("cwd {} is missing — /cwd to fix", project.cwd);
@@ -120,7 +120,9 @@ fn wrap_prompt_ctx(
         format!("perm: {perm}"),
         format!("default_branch: {default_branch}"),
         format!("last_pr: {}", project.last_pr.as_deref().unwrap_or("none")),
-        format!("When shipping: branch off {default_branch}, never push {default_branch}, open a PR with gh."),
+        format!(
+            "When shipping: branch off {default_branch}, never push {default_branch}, open a PR with gh."
+        ),
         "Do not force-push. Do not delete a repository.".into(),
     ];
     if let Some(id) = job_id {
@@ -143,10 +145,7 @@ fn wrap_prompt_ctx(
 }
 
 pub fn one_line_summary(text: &str) -> String {
-    let flat: String = text
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
     clip_chars(&flat, 280)
 }
 
@@ -177,11 +176,17 @@ mod tests {
                 project: "shop".into(),
                 engine: Engine::Claude,
                 session: None,
-                worktree: Some(dir.path().join(".worktrees/shop/j_ab3").display().to_string()),
+                worktree: Some(
+                    dir.path()
+                        .join(".worktrees/shop/j_ab3")
+                        .display()
+                        .to_string(),
+                ),
                 perm: "write".into(),
                 kind: "ship".into(),
                 state: "queued".into(),
                 telegram_status_id: None,
+                telegram_reply_ids: Vec::new(),
                 chat_id: None,
                 prompt: "go".into(),
                 queued_prompt: None,

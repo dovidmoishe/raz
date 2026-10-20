@@ -9,11 +9,11 @@ mod live;
 
 use std::path::Path;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use crate::integrations::git;
-use crate::models::{now_unix, Engine, Job, State};
-use crate::util::{clip_chars, clip_telegram, normalize, under_root, TELEGRAM_MAX};
+use crate::models::{Engine, Job, State, now_unix};
+use crate::util::{clip_chars, clip_telegram, normalize, under_root};
 
 pub use brief::{resolve_cwd, resolve_job_cwd, wrap_job_prompt, wrap_prompt};
 pub use live::{JobEvent, Live};
@@ -24,7 +24,10 @@ pub const MAX_JOBS: usize = 4;
 
 #[derive(Debug)]
 pub enum Submit {
-    Started { job_id: String, text: String },
+    Started {
+        job_id: String,
+        text: String,
+    },
     Queued {
         job_id: String,
         confirm: String,
@@ -166,8 +169,9 @@ pub fn stop(state: &mut State, id: Option<&str>) -> Result<String> {
 }
 
 pub fn enable_verbose(state: &mut State) -> Result<String> {
-    let id = default_job_id(state)
-        .ok_or_else(|| anyhow::anyhow!("usage: /verbose <prompt> — or /verbose while a job is running"))?;
+    let id = default_job_id(state).ok_or_else(|| {
+        anyhow::anyhow!("usage: /verbose <prompt> — or /verbose while a job is running")
+    })?;
     let job = state
         .jobs
         .get_mut(&id)
@@ -184,12 +188,7 @@ pub fn submit_verbose(state: &mut State, prompt: &str, chat_id: i64) -> Result<S
     submit_inner(state, prompt, chat_id, true, SubmitKind::Default)
 }
 
-pub fn submit_run(
-    state: &mut State,
-    engine: Engine,
-    prompt: &str,
-    chat_id: i64,
-) -> Result<Submit> {
+pub fn submit_run(state: &mut State, engine: Engine, prompt: &str, chat_id: i64) -> Result<Submit> {
     submit_inner(state, prompt, chat_id, false, SubmitKind::Run { engine })
 }
 
@@ -215,12 +214,11 @@ pub fn submit_both(state: &mut State, prompt: &str, chat_id: i64) -> Result<Subm
     if !write {
         if let Some(id) = blocks_on(
             state,
-            &project_path_key(state, &name).ok_or_else(|| anyhow::anyhow!("unknown project {name}"))?,
+            &project_path_key(state, &name)
+                .ok_or_else(|| anyhow::anyhow!("unknown project {name}"))?,
             &perm,
         ) {
-            bail!(
-                "{name} is writing ({id}). wait, /stop, or reply to that job."
-            );
+            bail!("{name} is writing ({id}). wait, /stop, or reply to that job.");
         }
     }
     let id_claude = new_job_id(state);
@@ -232,20 +230,9 @@ pub fn submit_both(state: &mut State, prompt: &str, chat_id: i64) -> Result<Subm
         }
     };
     let mut started = Vec::new();
-    for (id, engine) in [
-        (id_claude, Engine::Claude),
-        (id_codex, Engine::Codex),
-    ] {
+    for (id, engine) in [(id_claude, Engine::Claude), (id_codex, Engine::Codex)] {
         match start_new_job(
-            state,
-            &id,
-            &name,
-            engine,
-            prompt,
-            chat_id,
-            false,
-            write,
-            true,
+            state, &id, &name, engine, prompt, chat_id, false, write, true,
         ) {
             Ok(text) => started.push((id, text)),
             Err(err) => {
@@ -260,12 +247,7 @@ pub fn submit_both(state: &mut State, prompt: &str, chat_id: i64) -> Result<Subm
     Ok(Submit::StartedMany { jobs: started })
 }
 
-pub fn follow_job(
-    state: &mut State,
-    job_id: &str,
-    prompt: &str,
-    chat_id: i64,
-) -> Result<Submit> {
+pub fn follow_job(state: &mut State, job_id: &str, prompt: &str, chat_id: i64) -> Result<Submit> {
     let prompt = prompt.trim();
     if prompt.is_empty() {
         bail!("empty message");
@@ -298,7 +280,8 @@ pub fn follow_job(
 
 pub fn find_job_by_status_id(state: &State, message_id: i64) -> Option<String> {
     state.jobs.iter().find_map(|(id, job)| {
-        (job.telegram_status_id == Some(message_id)).then(|| id.clone())
+        (job.telegram_status_id == Some(message_id) || job.telegram_reply_ids.contains(&message_id))
+            .then(|| id.clone())
     })
 }
 
@@ -347,20 +330,17 @@ fn submit_inner(
 
     ensure_capacity(state, 1)?;
     let write = perm == "write";
-    let main_key = project_path_key(state, &name)
-        .ok_or_else(|| anyhow::anyhow!("unknown project {name}"))?;
+    let main_key =
+        project_path_key(state, &name).ok_or_else(|| anyhow::anyhow!("unknown project {name}"))?;
     let blocked = blocks_on(state, &main_key, &perm);
     let need_worktree = write && blocked.is_some();
     if !write {
         if let Some(id) = blocked {
-            bail!(
-                "{name} is writing ({id}). wait, /stop, or reply to that job."
-            );
+            bail!("{name} is writing ({id}). wait, /stop, or reply to that job.");
         }
     }
     let engine_busy = occupying_engine_on_project(state, &name, engine);
-    let fresh_session =
-        need_worktree || (matches!(kind, SubmitKind::Run { .. }) && engine_busy);
+    let fresh_session = need_worktree || (matches!(kind, SubmitKind::Run { .. }) && engine_busy);
     let id = new_job_id(state);
     let text = start_new_job(
         state,
@@ -417,6 +397,7 @@ fn start_new_job(
         kind: "ship".into(),
         state: "queued".into(),
         telegram_status_id: None,
+        telegram_reply_ids: Vec::new(),
         chat_id: Some(chat_id),
         prompt: prompt.to_string(),
         queued_prompt: None,
@@ -504,12 +485,7 @@ fn queue_follow(state: &mut State, id: &str, prompt: &str) -> Result<Submit> {
 pub fn format_status(id: &str, job: &Job) -> String {
     let mut lines = vec![
         format!("{id} {}", job.state),
-        format!(
-            "{} · {} · {}",
-            job.engine.as_str(),
-            job.project,
-            job.perm
-        ),
+        format!("{} · {} · {}", job.engine.as_str(), job.project, job.perm),
     ];
     if let Some(line) = job.last_line.as_deref() {
         if !line.is_empty() {
@@ -536,19 +512,12 @@ pub fn apply_status(job: &mut Job, line: &str, now: u64, force: bool) -> bool {
     true
 }
 
-pub fn final_reply(summary: &str, pr: Option<&str>) -> String {
-    match pr {
-        Some(url) if !url.is_empty() => {
-            let suffix = format!("\n{url}");
-            let budget = TELEGRAM_MAX.saturating_sub(suffix.chars().count());
-            let mut body = clip_chars(summary, budget);
-            body.push_str(&suffix);
-            body
-        }
-        _ => clip_telegram(summary),
+pub fn final_reply(response: &str, pr: Option<&str>) -> String {
+    match pr.filter(|url| !url.is_empty() && !response.contains(url)) {
+        Some(url) => format!("{response}\n\n{url}"),
+        None => response.to_string(),
     }
 }
-
 pub fn humanize(err: &anyhow::Error) -> String {
     let msg = err.to_string();
     let lower = msg.to_lowercase();
@@ -559,8 +528,7 @@ pub fn humanize(err: &anyhow::Error) -> String {
             || lower.contains("401")
             || lower.contains("403"))
     {
-        return "engine login expired. run raz auth claude or raz auth codex"
-            .into();
+        return "engine login expired. run raz auth claude or raz auth codex".into();
     }
     if lower.contains("missing binary")
         || ((lower.contains("not found") || lower.contains("cannot find"))
@@ -619,9 +587,8 @@ pub fn worktree_jail_ok(state: &State) -> Result<()> {
         let Some(wt) = job.worktree.as_deref() else {
             continue;
         };
-        under_root(root, Path::new(wt)).map_err(|_| {
-            anyhow::anyhow!("{id} worktree escapes workspace")
-        })?;
+        under_root(root, Path::new(wt))
+            .map_err(|_| anyhow::anyhow!("{id} worktree escapes workspace"))?;
     }
     Ok(())
 }
@@ -631,7 +598,11 @@ pub fn job_cap() -> usize {
 }
 
 pub fn occupying_count(state: &State) -> usize {
-    state.jobs.values().filter(|job| job.occupies_checkout()).count()
+    state
+        .jobs
+        .values()
+        .filter(|job| job.occupies_checkout())
+        .count()
 }
 
 fn engine_ready(state: &State, engine: Engine) -> bool {
@@ -642,9 +613,11 @@ fn engine_ready(state: &State, engine: Engine) -> bool {
 }
 
 fn require_project(state: &State) -> Result<String> {
-    state.current.project.clone().ok_or_else(|| {
-        anyhow::anyhow!("no current project — /add or /clone first")
-    })
+    state
+        .current
+        .project
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("no current project — /add or /clone first"))
 }
 
 fn require_engine(state: &mut State) -> Result<Engine> {
@@ -716,9 +689,10 @@ fn default_follow_job(state: &State, project: &str, engine: Engine) -> Option<St
 }
 
 fn occupying_engine_on_project(state: &State, project: &str, engine: Engine) -> bool {
-    state.jobs.values().any(|job| {
-        job.occupies_checkout() && job.project == project && job.engine == engine
-    })
+    state
+        .jobs
+        .values()
+        .any(|job| job.occupies_checkout() && job.project == project && job.engine == engine)
 }
 
 fn ensure_capacity(state: &State, extra: usize) -> Result<()> {
@@ -803,9 +777,15 @@ mod tests {
     fn use_and_perm_and_new() {
         let (_dir, mut state) = primed();
         state.projects.get_mut("shop").unwrap().sessions.claude = Some("cla-1".into());
-        assert_eq!(use_engine(&mut state, Some("codex")).unwrap(), "using codex");
+        assert_eq!(
+            use_engine(&mut state, Some("codex")).unwrap(),
+            "using codex"
+        );
         assert_eq!(state.current.engine, Some(Engine::Codex));
-        assert_eq!(set_perm(&mut state, Some("write")).unwrap(), "shop perm write");
+        assert_eq!(
+            set_perm(&mut state, Some("write")).unwrap(),
+            "shop perm write"
+        );
         assert_eq!(state.projects["shop"].perm, "write");
         assert!(set_perm(&mut state, Some("yolo")).is_err());
         assert_eq!(
@@ -872,16 +852,17 @@ mod tests {
         assert_eq!(stop(&mut state, None).unwrap(), format!("stopped {job_id}"));
         assert_eq!(state.jobs[&job_id].state, "stopped");
         assert!(state.jobs[&job_id].queued_prompt.is_none());
-        assert!(stop(&mut state, None).unwrap_err().to_string().contains("nothing"));
+        assert!(
+            stop(&mut state, None)
+                .unwrap_err()
+                .to_string()
+                .contains("nothing")
+        );
 
-        let Submit::Started { job_id: second, .. } =
-            submit(&mut state, "two", 1).unwrap()
-        else {
+        let Submit::Started { job_id: second, .. } = submit(&mut state, "two", 1).unwrap() else {
             panic!("started");
         };
-        assert!(stop(&mut state, Some(&second))
-            .unwrap()
-            .contains(&second));
+        assert!(stop(&mut state, Some(&second)).unwrap().contains(&second));
         assert_eq!(state.jobs[&second].state, "stopped");
     }
 
@@ -896,6 +877,7 @@ mod tests {
             kind: "ship".into(),
             state: "running".into(),
             telegram_status_id: None,
+            telegram_reply_ids: Vec::new(),
             chat_id: None,
             prompt: "go".into(),
             queued_prompt: None,
@@ -911,23 +893,23 @@ mod tests {
     }
 
     #[test]
-    fn final_summary_fits_telegram_and_keeps_pr() {
+    fn final_reply_preserves_full_response_and_pr() {
         let pr = "https://github.com/acme/shop/pull/4";
-        let long = "x".repeat(TELEGRAM_MAX);
+        let long = "x".repeat(crate::util::TELEGRAM_MAX * 3);
         let out = final_reply(&long, Some(pr));
-        assert!(out.chars().count() <= TELEGRAM_MAX);
+        assert!(out.starts_with(&long));
         assert!(out.ends_with(pr), "{out}");
-        assert!(out.contains('…'));
+        assert!(!out.contains('…'));
     }
 
     #[test]
     fn human_errors() {
-        assert!(humanize(&anyhow::anyhow!("claude auth expired 401"))
-            .contains("login expired"));
-        assert!(humanize(&anyhow::anyhow!("codex: binary not found"))
-            .contains("missing"));
+        assert!(humanize(&anyhow::anyhow!("claude auth expired 401")).contains("login expired"));
+        assert!(humanize(&anyhow::anyhow!("codex: binary not found")).contains("missing"));
         assert_eq!(
-            humanize(&anyhow::anyhow!("no current project — /add or /clone first")),
+            humanize(&anyhow::anyhow!(
+                "no current project — /add or /clone first"
+            )),
             "no current project — /add or /clone first"
         );
     }
@@ -956,24 +938,28 @@ mod tests {
 
     fn git_init_commit(dir: &std::path::Path) {
         use std::process::Command;
-        assert!(Command::new("git")
-            .args(["init"])
-            .current_dir(dir)
-            .status()
-            .unwrap()
-            .success());
-        std::fs::write(dir.join("README"), "shop").unwrap();
-        let git = |args: &[&str]| {
-            assert!(Command::new("git")
-                .args(args)
+        assert!(
+            Command::new("git")
+                .args(["init"])
                 .current_dir(dir)
-                .env("GIT_AUTHOR_NAME", "raz")
-                .env("GIT_AUTHOR_EMAIL", "raz@test")
-                .env("GIT_COMMITTER_NAME", "raz")
-                .env("GIT_COMMITTER_EMAIL", "raz@test")
                 .status()
                 .unwrap()
-                .success());
+                .success()
+        );
+        std::fs::write(dir.join("README"), "shop").unwrap();
+        let git = |args: &[&str]| {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(dir)
+                    .env("GIT_AUTHOR_NAME", "raz")
+                    .env("GIT_AUTHOR_EMAIL", "raz@test")
+                    .env("GIT_COMMITTER_NAME", "raz")
+                    .env("GIT_COMMITTER_EMAIL", "raz@test")
+                    .status()
+                    .unwrap()
+                    .success()
+            );
         };
         git(&["add", "."]);
         git(&["-c", "commit.gpgsign=false", "commit", "-m", "init"]);
@@ -1053,9 +1039,7 @@ mod tests {
         projects::switch(&mut state, "blog").unwrap();
         submit(&mut state, "blog task", 1).unwrap();
         projects::switch(&mut state, "notes").unwrap();
-        let err = submit(&mut state, "notes task", 1)
-            .unwrap_err()
-            .to_string();
+        let err = submit(&mut state, "notes task", 1).unwrap_err().to_string();
         assert!(err.contains("capacity"), "{err}");
         assert_eq!(occupying(&state).len(), 2);
     }
@@ -1088,10 +1072,7 @@ mod tests {
             panic!("expected many");
         };
         assert_eq!(jobs.len(), 2);
-        let engines: Vec<_> = jobs
-            .iter()
-            .map(|(id, _)| state.jobs[id].engine)
-            .collect();
+        let engines: Vec<_> = jobs.iter().map(|(id, _)| state.jobs[id].engine).collect();
         assert!(engines.contains(&Engine::Claude));
         assert!(engines.contains(&Engine::Codex));
         for (id, _) in &jobs {
@@ -1159,11 +1140,22 @@ mod tests {
         };
         stop(&mut state, Some(&first)).unwrap();
         state.jobs.get_mut(&first).unwrap().telegram_status_id = Some(44);
+        state.jobs.get_mut(&first).unwrap().telegram_reply_ids = vec![45, 46];
         state.jobs.get_mut(&first).unwrap().session = Some("cla-keep".into());
         state.current.engine = Some(Engine::Codex);
-        assert_eq!(find_job_by_status_id(&state, 44).as_deref(), Some(first.as_str()));
-        let Submit::Started { job_id, .. } =
-            follow_job(&mut state, &first, "continue", 1).unwrap()
+        assert_eq!(
+            find_job_by_status_id(&state, 44).as_deref(),
+            Some(first.as_str())
+        );
+        assert_eq!(
+            find_job_by_status_id(&state, 45).as_deref(),
+            Some(first.as_str())
+        );
+        assert_eq!(
+            find_job_by_status_id(&state, 46).as_deref(),
+            Some(first.as_str())
+        );
+        let Submit::Started { job_id, .. } = follow_job(&mut state, &first, "continue", 1).unwrap()
         else {
             panic!("started");
         };

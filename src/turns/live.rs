@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use super::brief::{one_line_summary, resolve_job_cwd, wrap_job_prompt};
 use super::{apply_status, humanize, job_cap};
 use crate::integrations::{claude, codex, stream};
-use crate::models::{now_unix, Engine, State, TurnEvent};
+use crate::models::{Engine, State, TurnEvent, now_unix};
 use crate::store;
 use crate::util::report;
 
@@ -19,7 +19,9 @@ pub const TURN_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Debug)]
 pub enum JobEvent {
-    Status { job_id: String },
+    Status {
+        job_id: String,
+    },
     Finished {
         job_id: String,
         ok: bool,
@@ -125,11 +127,7 @@ impl Live {
                             apply_status(job, "started", now_unix(), true);
                             report::info(
                                 "runner",
-                                format!(
-                                    "job {id} {} {} started",
-                                    job.engine.as_str(),
-                                    job.project
-                                ),
+                                format!("job {id} {} {} started", job.engine.as_str(), job.project),
                             );
                             record_turn(
                                 self.events.as_deref(),
@@ -138,7 +136,9 @@ impl Live {
                         }
                         events.push(JobEvent::Status { job_id: id });
                     }
-                    Err(err) => events.push(fail_job(self.events.as_deref(), state, &id, &err, None)),
+                    Err(err) => {
+                        events.push(fail_job(self.events.as_deref(), state, &id, &err, None))
+                    }
                 },
                 Err(err) => events.push(fail_job(self.events.as_deref(), state, &id, &err, None)),
             }
@@ -402,10 +402,7 @@ fn finish_ok(
     } else {
         one_line_summary(result)
     };
-    let project_name = state
-        .jobs
-        .get(job_id)
-        .map(|job| job.project.clone());
+    let project_name = state.jobs.get(job_id).map(|job| job.project.clone());
     if let Some(name) = project_name {
         if let Some(project) = state.projects.get_mut(&name) {
             project.last_summary = Some(summary.clone());
@@ -423,10 +420,7 @@ fn finish_ok(
         .get_mut(job_id)
         .and_then(|job| job.queued_prompt.take());
     if let Some((engine, project)) = &meta {
-        record_turn(
-            events,
-            TurnEvent::end(job_id, *engine, project, true, exit),
-        );
+        record_turn(events, TurnEvent::end(job_id, *engine, project, true, exit));
     }
     if let Some(job) = state.jobs.get_mut(job_id) {
         if let Some(next) = follow_up {
@@ -435,18 +429,20 @@ fn finish_ok(
             job.verbose = false;
             apply_status(job, "waiting to run", now_unix(), true);
             report::info("runner", format!("job {job_id} queued follow-up"));
-            return JobEvent::Status {
-                job_id: job_id.to_string(),
-            };
+        } else {
+            job.state = "done".into();
+            apply_status(job, "done", now_unix(), true);
         }
-        job.state = "done".into();
-        apply_status(job, "done", now_unix(), true);
     }
     report::info("runner", format!("job {job_id} done"));
     JobEvent::Finished {
         job_id: job_id.to_string(),
         ok: true,
-        summary,
+        summary: if result.trim().is_empty() {
+            "done".into()
+        } else {
+            result.to_string()
+        },
         pr,
     }
 }
@@ -479,7 +475,10 @@ fn fail_job(
     }
 }
 
-fn pump_stdio(stdout: std::process::ChildStdout, stderr: std::process::ChildStderr) -> Receiver<IoMsg> {
+fn pump_stdio(
+    stdout: std::process::ChildStdout,
+    stderr: std::process::ChildStderr,
+) -> Receiver<IoMsg> {
     let (tx, rx) = mpsc::channel();
     let tx_out = tx.clone();
     thread::spawn(move || {
@@ -516,7 +515,10 @@ fn append_cap(buf: &mut String, line: &str, cap: usize) {
     buf.push_str(line);
     buf.push('\n');
     if buf.len() > cap {
-        let extra = buf.len() - cap;
+        let mut extra = buf.len() - cap;
+        while !buf.is_char_boundary(extra) {
+            extra += 1;
+        }
         buf.drain(..extra);
     }
 }
@@ -543,6 +545,64 @@ mod tests {
     use crate::turns::submit;
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn completion_delivers_full_response_but_persists_only_short_handoff() {
+        let (_dir, mut state) = primed();
+        let crate::turns::Submit::Started { job_id, .. } =
+            submit(&mut state, "explain", 1).unwrap()
+        else {
+            panic!("started");
+        };
+        let response = format!(
+            "**Keep working flows**\n\n{}\n\nThe complete ending.",
+            "details 🙂 ".repeat(1000)
+        );
+        let event = finish_ok(None, &mut state, &job_id, &response, "", Some(0));
+        let JobEvent::Finished { summary, .. } = event else {
+            panic!("finished");
+        };
+        assert_eq!(summary, response);
+        let saved = state.projects["shop"].last_summary.as_deref().unwrap();
+        assert!(saved.chars().count() <= 280);
+        assert!(!saved.contains('\n'));
+        assert!(
+            !serde_json::to_string(&state)
+                .unwrap()
+                .contains("The complete ending.")
+        );
+    }
+
+    #[test]
+    fn queued_follow_up_does_not_swallow_completed_response() {
+        let (_dir, mut state) = primed();
+        let crate::turns::Submit::Started { job_id, .. } = submit(&mut state, "first", 1).unwrap()
+        else {
+            panic!("started");
+        };
+        state.jobs.get_mut(&job_id).unwrap().queued_prompt = Some("next".into());
+        let event = finish_ok(
+            None,
+            &mut state,
+            &job_id,
+            "first complete answer",
+            "",
+            Some(0),
+        );
+        assert!(
+            matches!(event, JobEvent::Finished { summary, .. } if summary == "first complete answer")
+        );
+        assert_eq!(state.jobs[&job_id].state, "queued");
+        assert_eq!(state.jobs[&job_id].prompt, "next");
+    }
+
+    #[test]
+    fn capped_stream_tail_preserves_unicode_boundaries() {
+        let mut buf = String::new();
+        append_cap(&mut buf, &"🙂".repeat(20000), 65536);
+        assert!(buf.len() <= 65536);
+        assert!(buf.ends_with('\n'));
+    }
 
     fn primed() -> (TempDir, State) {
         let dir = TempDir::new().unwrap();
@@ -583,7 +643,8 @@ mod tests {
         )
         .unwrap();
         let mut live = Live::new();
-        live.start(&job_id, cat_jsonl(_dir.path(), "out.jsonl")).unwrap();
+        live.start(&job_id, cat_jsonl(_dir.path(), "out.jsonl"))
+            .unwrap();
         state.jobs.get_mut(&job_id).unwrap().state = "running".into();
         let mut events = Vec::new();
         for _ in 0..50 {
@@ -602,14 +663,17 @@ mod tests {
             state.projects["shop"].last_pr.as_deref(),
             Some("https://github.com/acme/shop/pull/9")
         );
-        assert!(events.iter().any(|e| matches!(e, JobEvent::Finished { ok: true, .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, JobEvent::Finished { ok: true, .. }))
+        );
     }
 
     #[test]
     fn stop_kills_a_sleeping_child() {
         let (_dir, mut state) = primed();
-        let crate::turns::Submit::Started { job_id, .. } =
-            submit(&mut state, "hang", 1).unwrap()
+        let crate::turns::Submit::Started { job_id, .. } = submit(&mut state, "hang", 1).unwrap()
         else {
             panic!("started");
         };
@@ -636,8 +700,7 @@ mod tests {
     #[test]
     fn timeout_fails_the_job() {
         let (_dir, mut state) = primed();
-        let crate::turns::Submit::Started { job_id, .. } =
-            submit(&mut state, "hang", 1).unwrap()
+        let crate::turns::Submit::Started { job_id, .. } = submit(&mut state, "hang", 1).unwrap()
         else {
             panic!("started");
         };
@@ -658,7 +721,11 @@ mod tests {
         state.jobs.get_mut(&job_id).unwrap().state = "running".into();
         thread::sleep(Duration::from_millis(80));
         let events = live.tick(&mut state);
-        assert!(events.iter().any(|e| matches!(e, JobEvent::Finished { ok: false, .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, JobEvent::Finished { ok: false, .. }))
+        );
         assert_eq!(state.jobs[&job_id].state, "error");
     }
 
@@ -705,8 +772,13 @@ mod tests {
         else {
             panic!("started");
         };
-        state.jobs.get_mut(&job_id).unwrap().worktree =
-            Some(_dir.path().join(".worktrees/shop").join(&job_id).display().to_string());
+        state.jobs.get_mut(&job_id).unwrap().worktree = Some(
+            _dir.path()
+                .join(".worktrees/shop")
+                .join(&job_id)
+                .display()
+                .to_string(),
+        );
         persist_session(&mut state, &job_id, "wt-sess".into());
         assert_eq!(state.jobs[&job_id].session.as_deref(), Some("wt-sess"));
         assert_eq!(

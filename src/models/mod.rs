@@ -8,6 +8,7 @@ mod setup;
 mod state;
 mod telegram;
 mod telegram_api;
+mod telegram_error;
 mod tools;
 mod turn;
 
@@ -21,5 +22,6 @@ pub use setup::SetupProgress;
 pub use state::{PAIRING_TTL_SECS, SCHEMA_VERSION, State, new_pairing_code, now_unix};
 pub use telegram::TelegramState;
 pub use telegram_api::{Chat, Message, TelegramUpdate, TelegramUser};
+pub use telegram_error::TelegramApiError;
 pub use tools::Tools;
 pub use turn::TurnEvent;

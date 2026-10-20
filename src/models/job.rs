@@ -13,6 +13,8 @@ pub struct Job {
     pub state: String,
     pub telegram_status_id: Option<i64>,
     #[serde(default)]
+    pub telegram_reply_ids: Vec<i64>,
+    #[serde(default)]
     pub chat_id: Option<i64>,
     #[serde(default)]
     pub prompt: String,

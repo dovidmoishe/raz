@@ -1,8 +1,8 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::models::{State, TelegramUpdate};
+use crate::models::{State, TelegramApiError, TelegramUpdate};
 use crate::util::report;
 
 const API: &str = "https://api.telegram.org";
@@ -12,6 +12,7 @@ struct ApiResult<T> {
     ok: bool,
     result: Option<T>,
     description: Option<String>,
+    error_code: Option<u16>,
 }
 
 fn agent() -> ureq::Agent {
@@ -26,16 +27,30 @@ fn call<T: serde::de::DeserializeOwned>(
     body: serde_json::Value,
 ) -> Result<T> {
     let url = format!("{API}/bot{token}/{method}");
-    let response = agent()
-        .post(&url)
-        .send_json(body)
-        .context("telegram request")?;
+    let response = match agent().post(&url).send_json(body) {
+        Ok(response) => response,
+        Err(ureq::Error::Status(status, response)) => {
+            let error: serde_json::Value = response.into_json().unwrap_or_default();
+            return Err(TelegramApiError {
+                method: method.into(),
+                status,
+                description: error["description"]
+                    .as_str()
+                    .unwrap_or("request rejected")
+                    .into(),
+            }
+            .into());
+        }
+        Err(_) => bail!("telegram {method} connection failed; check network access"),
+    };
     let parsed: ApiResult<T> = response.into_json().context("telegram json")?;
     if !parsed.ok {
-        bail!(
-            "telegram {method} failed: {}",
-            parsed.description.unwrap_or_else(|| "unknown error".into())
-        );
+        return Err(TelegramApiError {
+            method: method.into(),
+            status: parsed.error_code.unwrap_or(0),
+            description: parsed.description.unwrap_or_else(|| "unknown error".into()),
+        }
+        .into());
     }
     parsed
         .result
@@ -99,11 +114,7 @@ pub fn install_menu(token: &str) -> Result<()> {
             })
         })
         .collect();
-    let _: bool = call(
-        token,
-        "setMyCommands",
-        json!({ "commands": commands }),
-    )?;
+    let _: bool = call(token, "setMyCommands", json!({ "commands": commands }))?;
     let _: bool = call(
         token,
         "setChatMenuButton",
@@ -117,21 +128,70 @@ pub fn send_message(token: &str, chat_id: i64, text: &str) -> Result<i64> {
     send_json(token, chat_id, text, None)
 }
 
-pub fn send_message_reply(
+pub fn send_message_reply(token: &str, chat_id: i64, text: &str, reply_to: i64) -> Result<i64> {
+    send_json(token, chat_id, text, Some(reply_to))
+}
+
+/// Send complete agent output; record each delivered part immediately so a
+/// reply to any part continues the same job, even after a later send fails.
+pub fn send_agent_reply(
     token: &str,
     chat_id: i64,
     text: &str,
     reply_to: i64,
-) -> Result<i64> {
-    send_json(token, chat_id, text, Some(reply_to))
+    mut delivered: impl FnMut(i64),
+) -> Result<()> {
+    let parts = super::telegram_format::reply_parts(text);
+    let total = parts.len();
+    for (index, (html, plain)) in parts.into_iter().enumerate() {
+        if index > 0 {
+            // Telegram limits sustained messages to a chat. Only final reply
+            // parts are paced; progress messages retain their existing path.
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+        }
+        let prefix = if total > 1 {
+            format!("({}/{total})\n", index + 1)
+        } else {
+            String::new()
+        };
+        let body = json!({
+            "chat_id": chat_id,
+            "text": format!("{prefix}{html}"),
+            "parse_mode": "HTML",
+            "reply_to_message_id": reply_to,
+        });
+        let sent = send_formatted_or_plain(body, &format!("{prefix}{plain}"), |body| {
+            call::<SentMessage>(token, "sendMessage", body).map(|sent| sent.message_id)
+        })
+        .with_context(|| format!("reply delivery stopped at part {} of {total}", index + 1))?;
+        delivered(sent);
+    }
+    Ok(())
 }
 
-fn send_json(
-    token: &str,
-    chat_id: i64,
-    text: &str,
-    reply_to: Option<i64>,
+fn send_formatted_or_plain(
+    mut body: serde_json::Value,
+    plain: &str,
+    mut send: impl FnMut(serde_json::Value) -> Result<i64>,
 ) -> Result<i64> {
+    match send(body.clone()) {
+        Ok(id) => Ok(id),
+        Err(err)
+            if err.to_string().contains("(400)")
+                && (err.to_string().contains("parse entities")
+                    || err.to_string().contains("Unsupported start tag")) =>
+        {
+            body.as_object_mut()
+                .expect("message object")
+                .remove("parse_mode");
+            body["text"] = json!(plain);
+            send(body)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn send_json(token: &str, chat_id: i64, text: &str, reply_to: Option<i64>) -> Result<i64> {
     let mut body = json!({
         "chat_id": chat_id,
         "text": outbound_text(text),
@@ -175,11 +235,7 @@ pub fn start_payload(text: &str) -> Option<&str> {
         return None;
     }
     let code = parts.next()?.trim();
-    if code.is_empty() {
-        None
-    } else {
-        Some(code)
-    }
+    if code.is_empty() { None } else { Some(code) }
 }
 
 pub fn try_pair(state: &mut State, token: &str, update: &TelegramUpdate) -> Result<bool> {
@@ -260,7 +316,37 @@ pub fn wait_for_pair(
 
 #[cfg(test)]
 mod tests {
-    use super::{start_payload, BOT_COMMANDS};
+    use super::{BOT_COMMANDS, start_payload};
+
+    #[test]
+    fn formatting_rejection_retries_plain_but_network_failure_does_not() {
+        let mut calls = 0;
+        let id = super::send_formatted_or_plain(
+            serde_json::json!({"text":"<b>hello</b>", "parse_mode":"HTML"}),
+            "hello",
+            |body| {
+                calls += 1;
+                if calls == 1 {
+                    anyhow::bail!("telegram sendMessage failed (400): can't parse entities");
+                }
+                assert!(body.get("parse_mode").is_none());
+                assert_eq!(body["text"], "hello");
+                Ok(42)
+            },
+        )
+        .unwrap();
+        assert_eq!(id, 42);
+        assert_eq!(calls, 2);
+        calls = 0;
+        assert!(
+            super::send_formatted_or_plain(serde_json::json!({"text":"hi"}), "hi", |_| {
+                calls += 1;
+                anyhow::bail!("network failed")
+            })
+            .is_err()
+        );
+        assert_eq!(calls, 1);
+    }
 
     #[test]
     fn parse_start() {

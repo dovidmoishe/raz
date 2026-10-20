@@ -7,3 +7,4 @@ pub mod github;
 pub mod stream;
 pub mod systemd;
 pub mod telegram;
+mod telegram_format;
