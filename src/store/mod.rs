@@ -1,6 +1,8 @@
 mod fs;
+mod serve_lock;
 
 pub use fs::{append_jsonl, atomic_write, is_world_readable, write_secret};
+pub use serve_lock::acquire_serve_lock;
 
 use std::path::Path;
 

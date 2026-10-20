@@ -57,6 +57,11 @@ fn call<T: serde::de::DeserializeOwned>(
         .ok_or_else(|| anyhow::anyhow!("telegram {method} returned no result"))
 }
 
+pub fn is_poll_conflict(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<TelegramApiError>()
+        .is_some_and(|error| error.status == 409 && error.method == "getUpdates")
+}
+
 pub fn get_updates(token: &str, offset: i64, timeout: u64) -> Result<Vec<TelegramUpdate>> {
     call(
         token,
@@ -317,6 +322,26 @@ pub fn wait_for_pair(
 #[cfg(test)]
 mod tests {
     use super::{BOT_COMMANDS, start_payload};
+
+    #[test]
+    fn poll_conflict_uses_status_and_method_even_with_context() {
+        let conflict = anyhow::Error::new(crate::models::TelegramApiError {
+            method: "getUpdates".into(),
+            status: 409,
+            description: "Conflict".into(),
+        })
+        .context("poll failed");
+        assert!(super::is_poll_conflict(&conflict));
+        assert!(!super::is_poll_conflict(&anyhow::anyhow!(
+            "409 unrelated text"
+        )));
+        let send = anyhow::Error::new(crate::models::TelegramApiError {
+            method: "sendMessage".into(),
+            status: 409,
+            description: "Conflict".into(),
+        });
+        assert!(!super::is_poll_conflict(&send));
+    }
 
     #[test]
     fn formatting_rejection_retries_plain_but_network_failure_does_not() {

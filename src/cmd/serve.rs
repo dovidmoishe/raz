@@ -1,10 +1,11 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
+use std::time::{Duration, Instant};
 
 use crate::cmd::bot::{self, Reply};
 use crate::integrations::{engines, github, telegram};
-use crate::models::{now_unix, Paths, State, TelegramUpdate};
+use crate::models::{Paths, State, TelegramUpdate, now_unix};
 use crate::turns::{self, JobEvent, Live};
-use crate::util::{is_root, report, Limiter};
+use crate::util::{Limiter, is_root, report};
 
 const SLASH_WINDOW_SECS: u64 = 20;
 const SLASH_MAX: usize = 8;
@@ -21,6 +22,9 @@ pub fn run() -> Result<()> {
     if !paths.state.exists() {
         bail!("no state.json — run raz setup");
     }
+    // Acquire before loading state, recovering jobs, or making Telegram calls.
+    // Declared before Live so children shut down before the lock is released.
+    let _serve_lock = crate::store::acquire_serve_lock(&paths.home)?;
     let mut state = State::load(&paths.state)?;
     let token = paths
         .telegram_token()?
@@ -43,6 +47,9 @@ pub fn run() -> Result<()> {
     let mut github_login: Option<github::LoginChild> = None;
     let mut slash_limit = Limiter::new(SLASH_WINDOW_SECS, SLASH_MAX);
     let mut run_limit = Limiter::new(RUN_WINDOW_SECS, RUN_MAX);
+    let mut poll_after = Instant::now();
+    let mut poll_failures = 0u32;
+    let mut conflict_reported = false;
 
     report::info("serve", format!("home {}", paths.home.display()));
     report::info(
@@ -68,16 +75,51 @@ pub fn run() -> Result<()> {
         tick_github(&mut github_login, &mut state, &token);
         state.save(&paths.state)?;
 
+        // Continue ticking jobs during a polling cooldown, so a conflict does
+        // not abandon running children or prevent their completion delivery.
+        if let Some(wait) = poll_after.checked_duration_since(Instant::now()) {
+            std::thread::sleep(wait.min(Duration::from_secs(1)));
+            continue;
+        }
+
         let timeout = if live.is_empty() && github_login.is_none() {
             25
         } else {
             1
         };
-        let updates = match telegram::get_updates(&token, state.telegram.last_update_id + 1, timeout)
-        {
-            Ok(u) => u,
+        let updates = match telegram::get_updates(
+            &token,
+            state.telegram.last_update_id + 1,
+            timeout,
+        ) {
+            Ok(u) => {
+                if conflict_reported {
+                    report::info(
+                        "serve",
+                        "Telegram polling recovered; bot connection restored",
+                    );
+                }
+                conflict_reported = false;
+                poll_failures = 0;
+                u
+            }
             Err(err) => {
-                report::warn("serve", err.to_string());
+                let conflict = telegram::is_poll_conflict(&err);
+                poll_failures = poll_failures.saturating_add(1);
+                let delay = poll_retry_delay(poll_failures, conflict);
+                if conflict && !conflict_reported {
+                    report::warn(
+                        "serve",
+                        "Telegram polling conflict: another process is using this bot token, or a webhook is configured. Stop other bot instances (including on your VPS), or remove the webhook if switching to polling. Retrying every 30 seconds; active jobs continue. A different RAZ_HOME does not allow sharing one bot token",
+                    );
+                    conflict_reported = true;
+                } else if !conflict {
+                    report::warn(
+                        "serve",
+                        format!("{err}; retrying in {} seconds", delay.as_secs()),
+                    );
+                }
+                poll_after = Instant::now() + delay;
                 continue;
             }
         };
@@ -97,6 +139,14 @@ pub fn run() -> Result<()> {
         live.reap_stopped(&state);
         state.save(&paths.state)?;
     }
+}
+
+fn poll_retry_delay(failures: u32, conflict: bool) -> Duration {
+    Duration::from_secs(if conflict {
+        30
+    } else {
+        2u64.saturating_pow(failures.min(5)).min(30)
+    })
 }
 
 fn handle(
@@ -136,18 +186,11 @@ fn handle(
             slash_limit.allow(now)
         };
         if !allowed {
-            telegram::send_message(
-                token,
-                chat_id,
-                "slow down — try again in a few seconds",
-            )?;
+            telegram::send_message(token, chat_id, "slow down — try again in a few seconds")?;
             return Ok(());
         }
     }
-    let reply_to = message
-        .reply_to_message
-        .as_ref()
-        .map(|m| m.message_id);
+    let reply_to = message.reply_to_message.as_ref().map(|m| m.message_id);
     let stopping = text == "/stop" || text.starts_with("/stop ");
     match bot::dispatch(state, text, chat_id, reply_to) {
         Ok(Reply::Message(text)) => {
@@ -185,9 +228,8 @@ fn handle(
         }
         Ok(Reply::GithubLogin) => start_github_login(github_login, token, chat_id)?,
         Err(err) => {
-            let hide = stopping
-                && github_login.is_some()
-                && err.to_string().contains("nothing to stop");
+            let hide =
+                stopping && github_login.is_some() && err.to_string().contains("nothing to stop");
             if !hide {
                 report::warn("serve", format!("{err:#}"));
                 telegram::send_message(token, chat_id, &turns::humanize(&err))?;
@@ -240,11 +282,7 @@ fn stop_github_login(github_login: &mut Option<github::LoginChild>) {
     }
 }
 
-fn tick_github(
-    github_login: &mut Option<github::LoginChild>,
-    state: &mut State,
-    token: &str,
-) {
+fn tick_github(github_login: &mut Option<github::LoginChild>, state: &mut State, token: &str) {
     let event = match github_login.as_mut() {
         Some(child) => child.tick(),
         None => return,
@@ -293,10 +331,7 @@ fn classify_rate(text: &str) -> Option<bool> {
         return Some(true);
     }
     if is_cmd(text, "/verbose") {
-        let prompt = text
-            .strip_prefix("/verbose")
-            .unwrap_or("")
-            .trim();
+        let prompt = text.strip_prefix("/verbose").unwrap_or("").trim();
         if !prompt.is_empty() {
             return Some(true);
         }
@@ -369,6 +404,14 @@ fn emit(token: &str, state: &mut State, events: &[JobEvent]) {
 #[cfg(test)]
 mod tests {
     use super::{classify_rate, is_cmd};
+
+    #[test]
+    fn polling_retry_is_bounded_and_conflicts_have_a_cooldown() {
+        assert_eq!(super::poll_retry_delay(1, false).as_secs(), 2);
+        assert_eq!(super::poll_retry_delay(2, false).as_secs(), 4);
+        assert_eq!(super::poll_retry_delay(u32::MAX, false).as_secs(), 30);
+        assert_eq!(super::poll_retry_delay(1, true).as_secs(), 30);
+    }
 
     #[test]
     fn stop_is_not_rate_limited() {
